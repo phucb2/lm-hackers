@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tqdm.auto import tqdm
 
 torch.manual_seed(203)
 
@@ -26,14 +27,22 @@ valid_ts = tensor[train_sz:]
 #===============================================================================
 # Parameters
 #===============================================================================
+
+# model parameters
 block_size = 8
 vocab_size = len(chars)
 batch_size = 32
 n_embs = 32
+
+# training parameters
 epoches = 5000
 # epoches = 100
 learning_rate = 1e-2
-
+eval_iter = 400
+# Dry run/Debug
+dry_run = True
+# Check if GPU is available
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 #===============================================================================
 # Utils
 #===============================================================================
@@ -42,7 +51,7 @@ def estimate_loss(model):
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(epoches)
+        losses = torch.zeros(epoches).to(device)
         for k in range(epoches):
             X, Y = get_batch(split)
             _, loss = model(X, Y)
@@ -56,6 +65,7 @@ def get_batch(ds:str = 'train'):
   ix = torch.randint(data.shape[0] - block_size, (batch_size,))
   xb = torch.stack([data[i:i+block_size] for i in ix])
   yb = torch.stack([data[i+1:i+block_size+1] for i in ix])
+  xb, yb = xb.to(device), yb.to(device)
   return xb, yb
 
 
@@ -64,7 +74,7 @@ def get_batch(ds:str = 'train'):
 #===============================================================================
 
 class Head(nn.Module):
-  def __init__(self, n_embs, head_dim):
+  def __init__(self, head_dim):
     super().__init__()
     self.query = nn.Linear(n_embs, head_dim)
     self.key = nn.Linear(n_embs, head_dim)
@@ -86,12 +96,20 @@ class Head(nn.Module):
     out = wei @ v # (B, T, T) @ (B, T, head_size) = (B, T, head_size)
     return out
 
+class MultiHead(nn.Module):
+  def __init__(self, head_size, num_heads) -> None:
+    super().__init__()
+    self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+    
+  def forward(self, x):
+    return torch.cat([h(x) for h in self.heads], dim=-1)
+
 class BigramLM(nn.Module):
   def __init__(self):
     super().__init__()
     self.token_embd = nn.Embedding(vocab_size, n_embs)
     self.position_embd = nn.Embedding(block_size, n_embs)
-    self.sa = Head(n_embs, head_dim=n_embs)
+    self.sa = MultiHead(n_embs // 4, 4)
     self.lm_head = nn.Linear(n_embs, vocab_size)
     
     
@@ -124,23 +142,34 @@ class BigramLM(nn.Module):
     return idx
 
 def generate_text(m, max_size):
-  init = torch.zeros((1, 1), dtype=torch.long)
+  init = torch.zeros((1, 1), dtype=torch.long).to(device)
   o = m.generate(init, max_size)
   return decode(list(o[0].tolist()))
 
+def estimate_params(m):
+  return sum(p.numel() for p in m.parameters() if p.requires_grad)
 
 m = BigramLM()
+m = m.to(device)
+
 optimizer = torch.optim.AdamW(m.parameters(), lr=learning_rate)
-for _ in range(epoches):
+print("Number of parameters: ", estimate_params(m))
+print("Running on", device)
+print("Mode: ", "Dry run" if dry_run else "Normal")
+eval_iter = 100 if dry_run else eval_iter
+
+for iter in tqdm(range(epoches)):
   xb, yb = get_batch('train')
   optimizer.zero_grad(set_to_none=True)
   logits, loss = m(xb, yb)
   loss.backward()
   optimizer.step()
   # Pretty print loss every 10 epoches
-  if _ % 400 == 0:
+  if iter % eval_iter == 0 or iter == epoches - 1:
     losses = estimate_loss(m)
-    print(f'Epoch {_} | Train loss: {losses["train"]:.2f} | Val loss: {losses["val"]:.2f}')
+    print(f'Epoch {iter} | Train loss: {losses["train"]:.2f} | Val loss: {losses["val"]:.2f}')
+    if dry_run:
+      break
    
   
         
