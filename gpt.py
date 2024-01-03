@@ -103,6 +103,17 @@ class MultiHead(nn.Module):
     
   def forward(self, x):
     return torch.cat([h(x) for h in self.heads], dim=-1)
+  
+class Feedforward(nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.net = nn.Sequential(
+      nn.Linear(n_embs, n_embs),
+      nn.ReLU(),
+    )
+    
+  def forward(self, x):
+    return self.net(x)
 
 class BigramLM(nn.Module):
   def __init__(self):
@@ -110,6 +121,7 @@ class BigramLM(nn.Module):
     self.token_embd = nn.Embedding(vocab_size, n_embs)
     self.position_embd = nn.Embedding(block_size, n_embs)
     self.sa = MultiHead(n_embs // 4, 4)
+    self.ffwd = Feedforward()
     self.lm_head = nn.Linear(n_embs, vocab_size)
     
     
@@ -119,7 +131,7 @@ class BigramLM(nn.Module):
     position_em = self.position_embd(torch.arange(T, device=idx.device)) # (T, C)
     x = token_em + position_em # (B, T, C)
     x = self.sa(x) # (B, T, C)
-    
+    x = self.ffwd(x) # (B, T, C)
     logits = self.lm_head(x) # (B, T, C)
     
     if targets is None:
