@@ -33,6 +33,7 @@ block_size = 8
 vocab_size = len(chars)
 batch_size = 32
 n_embs = 32
+num_heads = 4
 
 # training parameters
 epoches = 5000
@@ -40,7 +41,7 @@ epoches = 5000
 learning_rate = 1e-2
 eval_iter = 400
 # Dry run/Debug
-dry_run = True
+dry_run = False
 # Check if GPU is available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 #===============================================================================
@@ -108,20 +109,31 @@ class Feedforward(nn.Module):
   def __init__(self):
     super().__init__()
     self.net = nn.Sequential(
-      nn.Linear(n_embs, n_embs),
+      nn.Linear(n_embs, n_embs * 4),
       nn.ReLU(),
+      nn.Linear(n_embs * 4, n_embs)
     )
     
   def forward(self, x):
     return self.net(x)
+  
+class Block(nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.sa = MultiHead(n_embs // num_heads, num_heads)
+    self.ffwd = Feedforward()
+  def forward(self, x):
+    x = x + self.sa(x)
+    x = x + self.ffwd(x)
+    return x
+    
 
 class BigramLM(nn.Module):
   def __init__(self):
     super().__init__()
     self.token_embd = nn.Embedding(vocab_size, n_embs)
     self.position_embd = nn.Embedding(block_size, n_embs)
-    self.sa = MultiHead(n_embs // 4, 4)
-    self.ffwd = Feedforward()
+    self.blocks = nn.Sequential(*[Block() for _ in range(4)])
     self.lm_head = nn.Linear(n_embs, vocab_size)
     
     
@@ -130,8 +142,7 @@ class BigramLM(nn.Module):
     token_em = self.token_embd(idx) # (B, T, C) and C = vocab_size
     position_em = self.position_embd(torch.arange(T, device=idx.device)) # (T, C)
     x = token_em + position_em # (B, T, C)
-    x = self.sa(x) # (B, T, C)
-    x = self.ffwd(x) # (B, T, C)
+    x = self.blocks(x)
     logits = self.lm_head(x) # (B, T, C)
     
     if targets is None:
@@ -186,5 +197,4 @@ for iter in tqdm(range(epoches)):
   
         
 print(loss.item())
-
 print(generate_text(m, 500))
